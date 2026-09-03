@@ -1,8 +1,10 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+import https from 'node:https'
 
 const steamId = '76561198842164016'
 const output = resolve('public/steam-games.json')
+
 const urls = [
   `https://steamcommunity.com/profiles/${steamId}/games/?tab=all&xml=1`,
   `https://steamcommunity.com/profiles/${steamId}/games?tab=all&xml=1`,
@@ -49,25 +51,56 @@ function parseGamesXml(xml) {
   return games
 }
 
+function fetchWithHttps(url) {
+  return new Promise((resolvePromise, reject) => {
+    const request = https.get(
+      url,
+      {
+        headers: {
+          Accept: 'application/xml,text/xml;q=0.9,*/*;q=0.8',
+          'User-Agent': 'Mozilla/5.0 (compatible; game-library-build/1.0)',
+        },
+        timeout: 30000,
+      },
+      (response) => {
+        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          response.resume()
+          fetchWithHttps(new URL(response.headers.location, url).toString())
+            .then(resolvePromise)
+            .catch(reject)
+          return
+        }
+
+        let body = ''
+        response.setEncoding('utf8')
+        response.on('data', (chunk) => {
+          body += chunk
+        })
+        response.on('end', () => {
+          if ((response.statusCode ?? 0) < 200 || (response.statusCode ?? 0) >= 300) {
+            reject(new Error(`HTTP ${response.statusCode}`))
+            return
+          }
+          resolvePromise(body)
+        })
+      },
+    )
+
+    request.on('timeout', () => {
+      request.destroy(new Error('请求 Steam 超时'))
+    })
+    request.on('error', reject)
+  })
+}
+
 async function fetchSteamGames() {
   let lastError = null
 
   for (const url of urls) {
     try {
-      const response = await fetch(url, {
-        headers: {
-          Accept: 'application/xml,text/xml;q=0.9,*/*;q=0.8',
-          'User-Agent': 'game-library-build/1.0',
-        },
-        signal: AbortSignal.timeout(30000),
-      })
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
-      }
-
-      const xml = await response.text()
+      const xml = await fetchWithHttps(url)
       const games = parseGamesXml(xml)
+
       if (!games.length) {
         throw new Error('Steam 返回的游戏库为空或格式已变化')
       }
@@ -75,6 +108,7 @@ async function fetchSteamGames() {
       return games
     } catch (error) {
       lastError = error
+      console.warn(`Steam 请求失败：${url}：${error instanceof Error ? error.message : '未知错误'}`)
     }
   }
 
