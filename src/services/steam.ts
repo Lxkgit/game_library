@@ -20,26 +20,7 @@ function toDateTime(value: string) {
   return new Date(timestamp * 1000).toLocaleDateString('zh-CN')
 }
 
-/**
- * 读取 Steam 公开游戏库 XML。
- * Steam 官方已将 Community XML 标记为 deprecated，但目前仍可用于
- * “公开游戏库 + 纯前端 + 不使用 API Key”的 MVP。
- *
- * 注意：games 后面不要加 `/`，使用 Steam 当前公开格式：
- * /games?tab=all&xml=1
- */
-export async function fetchSteamGames(): Promise<SteamGame[]> {
-  const base = import.meta.env.BASE_URL.endsWith('/')
-    ? import.meta.env.BASE_URL
-    : `${import.meta.env.BASE_URL}/`
-  const url = `${base}steam-community/profiles/${STEAM_CONFIG.profileId}/games?tab=all&xml=1`
-  const response = await fetch(url, { headers: { Accept: 'application/xml,text/xml' } })
-
-  if (!response.ok) {
-    throw new Error(`Steam 返回 HTTP ${response.status}，请求地址：${url}`)
-  }
-
-  const xml = await response.text()
+function parseGamesXml(xml: string): SteamGame[] {
   const document = new DOMParser().parseFromString(xml, 'application/xml')
 
   if (document.querySelector('parsererror')) {
@@ -62,4 +43,42 @@ export async function fetchSteamGames(): Promise<SteamGame[]> {
       }
     })
     .filter((game): game is SteamGame => game !== null)
+}
+
+/**
+ * 读取 Steam 公开游戏库 XML。
+ *
+ * Steam 当前公开格式：
+ * https://steamcommunity.com/profiles/<SteamID64>/games?tab=all&xml=1
+ *
+ * 这里不能再使用 /tool/game/steam-community/... 作为生产请求地址：
+ * Vite 的 server.proxy 只在开发服务器生效，生产环境下会直接得到 404。
+ *
+ * 因此生产环境优先直接访问 Steam；如果浏览器因 CORS 拒绝，再通过
+ * allorigins 的 raw 代理读取 XML。整个过程仍然是纯前端，不需要 API Key。
+ */
+export async function fetchSteamGames(): Promise<SteamGame[]> {
+  const steamUrl = `https://steamcommunity.com/profiles/${STEAM_CONFIG.profileId}/games?tab=all&xml=1`
+
+  try {
+    const response = await fetch(steamUrl, {
+      headers: { Accept: 'application/xml,text/xml' },
+    })
+
+    if (!response.ok) {
+      throw new Error(`Steam 返回 HTTP ${response.status}`)
+    }
+
+    return parseGamesXml(await response.text())
+  } catch (directError) {
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(steamUrl)}`
+    const response = await fetch(proxyUrl)
+
+    if (!response.ok) {
+      const directMessage = directError instanceof Error ? directError.message : 'Steam 请求失败'
+      throw new Error(`${directMessage}；CORS 代理返回 HTTP ${response.status}`)
+    }
+
+    return parseGamesXml(await response.text())
+  }
 }
