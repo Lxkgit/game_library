@@ -48,41 +48,34 @@ function parseGamesXml(xml: string): SteamGame[] {
 /**
  * 读取 Steam 公开游戏库 XML。
  *
- * Steam 的 Community XML 接口没有提供可依赖的浏览器 CORS 响应，
- * 因此前端直接 fetch Steam 时可能出现 Failed to fetch。
- * 当前仍保持纯前端、无需 API Key；先尝试直连，再依次使用公开 CORS 代理。
+ * 不再从浏览器直接请求 Steam，也不再依赖第三方 CORS 代理。
+ * 请求统一走当前站点的 /tool/game/steam-community/ 反向代理，
+ * 由 nginx/Vite 服务器请求 Steam，从而避免浏览器 CORS 和第三方代理不稳定问题。
  */
 export async function fetchSteamGames(): Promise<SteamGame[]> {
-  const steamUrl = `https://steamcommunity.com/profiles/${STEAM_CONFIG.profileId}/games?tab=all&xml=1`
+  const base = import.meta.env.BASE_URL.endsWith('/')
+    ? import.meta.env.BASE_URL
+    : `${import.meta.env.BASE_URL}/`
+  const url = `${base}steam-community/profiles/${STEAM_CONFIG.profileId}/games?tab=all&xml=1`
 
-  const requests: Array<() => Promise<Response>> = [
-    () => fetch(steamUrl),
-    () => fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(steamUrl)}`),
-    () => fetch(`https://corsproxy.io/?url=${encodeURIComponent(steamUrl)}`),
-    () => fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(steamUrl)}`),
-  ]
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: 'application/xml,text/xml;q=0.9,*/*;q=0.8',
+      },
+    })
 
-  const errors: string[] = []
-
-  for (const request of requests) {
-    try {
-      const response = await request()
-      if (!response.ok) {
-        errors.push(`HTTP ${response.status}`)
-        continue
-      }
-
-      const xml = await response.text()
-      if (!xml.trim()) {
-        errors.push('返回内容为空')
-        continue
-      }
-
-      return parseGamesXml(xml)
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : 'Failed to fetch')
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`)
     }
-  }
 
-  throw new Error(`Steam 数据请求失败：${errors.join('；')}`)
+    const xml = await response.text()
+    if (!xml.trim()) {
+      throw new Error('返回内容为空')
+    }
+
+    return parseGamesXml(xml)
+  } catch (error) {
+    throw new Error(`Steam 数据请求失败：${error instanceof Error ? error.message : '请求失败'}`)
+  }
 }
