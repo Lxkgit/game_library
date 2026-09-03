@@ -3,12 +3,13 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises'
 const PROFILE_ID = '76561198842164016'
 const OUTPUT = new URL('../public/steam-games.json', import.meta.url)
 
-// Steam 当前公开游戏页不再稳定输出旧版 g_rgGameData。
-// SteamDB 可以读取公开 Steam 资料，因此优先通过 Jina Reader 获取
-// SteamDB Calculator 的文本页面；Steam Community 作为第二数据源保留。
+// 不使用 Steam Web API Key。
+// 优先使用 SteamHunters 的公开用户游戏数据接口；
+// Steam Community / SteamDB 作为后备数据源。
 const urls = [
-  `https://r.jina.ai/https://steamdb.info/calculator/${PROFILE_ID}/`,
+  `https://steamhunters.com/api/steam-users/${PROFILE_ID}/licenses?state=started`,
   `https://r.jina.ai/https://steamcommunity.com/profiles/${PROFILE_ID}/games/?tab=all&l=english`,
+  `https://r.jina.ai/https://steamdb.info/calculator/${PROFILE_ID}/`,
 ]
 
 function toDateTime(timestamp) {
@@ -43,6 +44,25 @@ function normalizeGames(source) {
 
     return makeGame(appid, name, hours, lastPlayed)
   }).filter(Boolean)
+}
+
+function parseSteamHunters(text) {
+  try {
+    const data = JSON.parse(text)
+    const source = data?.result ?? data?.results ?? data
+    const entries = Array.isArray(source) ? source : Object.entries(source ?? {})
+
+    return entries.map(entry => {
+      const license = Array.isArray(entry) ? entry[1] : entry
+      const appid = Number(Array.isArray(entry) ? entry[0] : license?.appid ?? license?.app?.appid)
+      const name = String(license?.app?.name ?? license?.name ?? '').trim()
+      if (!appid || !name) return null
+
+      return makeGame(appid, name)
+    }).filter(Boolean)
+  } catch {
+    return []
+  }
 }
 
 function parseJsonVariable(text, variableName) {
@@ -90,10 +110,6 @@ function parseJsonVariable(text, variableName) {
 
 function parseSteamDB(text) {
   const games = []
-
-  // 兼容 Jina 输出中的 Markdown/HTML Steam 商店链接：
-  // [Game Name](https://store.steampowered.com/app/730/...)
-  // <a href="/app/730/...">Game Name</a>
   const patterns = [
     /\[([^\]\n]+?)\]\(https?:\/\/store\.steampowered\.com\/app\/(\d+)[^)]*\)/gi,
     /\[([^\]\n]+?)\]\(\/app\/(\d+)[^)]*\)/gi,
@@ -114,32 +130,14 @@ function parseSteamDB(text) {
     }
   }
 
-  // SteamDB/Jina 有时把 Owned Games 直接转成表格文字，
-  // 表格中的第一列可能是 app 链接，第二列是名称。再做一层兜底。
-  if (!games.length) {
-    const rows = text.split('\n')
-    for (const row of rows) {
-      const appMatch = row.match(/(?:\/app\/|app\/)(\d{2,8})(?:\/|\b)/i)
-      if (!appMatch) continue
-      const appid = Number(appMatch[1])
-      const cells = row
-        .split('|')
-        .map(cell => cell.replace(/[*_`<>]/g, '').trim())
-        .filter(Boolean)
-      const name = cells.find(cell =>
-        cell.length > 1 &&
-        !/^\d+(?:\.\d+)?$/.test(cell) &&
-        !/^(Name|Price|Time|Rating|Image|Owned Games)$/i.test(cell),
-      )
-      if (!name || games.some(game => game.appid === appid)) continue
-      games.push(makeGame(appid, name))
-    }
-  }
-
   return games
 }
 
-function parseSteamText(text) {
+function parseSteamText(text, sourceUrl) {
+  if (sourceUrl.includes('steamhunters.com')) {
+    return parseSteamHunters(text)
+  }
+
   for (const variable of ['g_rgGameData', 'rgGames', 'g_rgOwnedGames']) {
     const games = normalizeGames(parseJsonVariable(text, variable))
     if (games.length) return games
@@ -151,8 +149,8 @@ function parseSteamText(text) {
 async function fetchText(url) {
   const response = await fetch(url, {
     headers: {
-      'User-Agent': 'game-library-steam-sync/2.0',
-      Accept: 'text/plain,text/markdown,text/html;q=0.9,*/*;q=0.8',
+      'User-Agent': 'game-library-steam-sync/3.0',
+      Accept: 'application/json,text/plain,text/markdown,text/html;q=0.9,*/*;q=0.8',
     },
     signal: AbortSignal.timeout(90000),
   })
@@ -179,7 +177,7 @@ for (const url of urls) {
     console.log(`数据源返回长度：${body.length}`)
     console.log(`数据源预览：${body.slice(0, 800).replace(/\s+/g, ' ')}`)
 
-    const games = parseSteamText(body)
+    const games = parseSteamText(body, url)
     console.log(`解析到游戏数量：${games.length}`)
 
     if (!games.length) {
@@ -198,6 +196,4 @@ for (const url of urls) {
 
 const existingGames = await readExistingGames()
 console.warn(`Steam 游戏库本次未能获取，保留现有数据：${existingGames.length} 个游戏。最后错误：${lastError?.message ?? '未知错误'}`)
-
-// 数据源暂时异常时不要让 CI 变红，也绝不覆盖已有有效数据。
 process.exit(0)
