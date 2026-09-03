@@ -126,10 +126,10 @@ function parseSteamXml(text) {
     const name = get('name')
     if (!appid || !name || seen.has(appid)) continue
 
-    const minutes = Number(get('hoursOnRecord') || 0)
+    const hours = Number(get('hoursOnRecord') || 0)
     const lastPlayed = Number(get('lastPlayed') || 0)
     seen.add(appid)
-    games.push(makeGame(appid, name, minutes, lastPlayed))
+    games.push(makeGame(appid, name, hours, lastPlayed))
   }
 
   return games
