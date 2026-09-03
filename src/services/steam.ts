@@ -48,15 +48,16 @@ function parseGamesXml(xml: string): SteamGame[] {
 /**
  * 读取 Steam 公开游戏库 XML。
  *
- * 不再从浏览器直接请求 Steam，也不再依赖第三方 CORS 代理。
- * 请求统一走当前站点的 /tool/game/steam-community/ 反向代理，
- * 由 nginx/Vite 服务器请求 Steam，从而避免浏览器 CORS 和第三方代理不稳定问题。
+ * 浏览器不直接请求 Steam，而是请求当前站点的反向代理。
+ * 生产环境需要 nginx 将 /tool/game/steam-community/ 转发到 Steam。
  */
 export async function fetchSteamGames(): Promise<SteamGame[]> {
   const base = import.meta.env.BASE_URL.endsWith('/')
     ? import.meta.env.BASE_URL
     : `${import.meta.env.BASE_URL}/`
-  const url = `${base}steam-community/profiles/${STEAM_CONFIG.profileId}/games?tab=all&xml=1`
+
+  // 保留 games/ 尾斜杠，兼容 Steam Community 当前常见的游戏库 XML 地址。
+  const url = `${base}steam-community/profiles/${STEAM_CONFIG.profileId}/games/?tab=all&xml=1`
 
   try {
     const response = await fetch(url, {
