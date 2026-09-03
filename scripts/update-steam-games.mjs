@@ -4,25 +4,9 @@ const PROFILE_ID = '76561198842164016'
 const OUTPUT = new URL('../public/steam-games.json', import.meta.url)
 
 const urls = [
+  `https://steamcommunity.com/profiles/${PROFILE_ID}/games/?tab=all`,
   `https://steamcommunity.com/profiles/${PROFILE_ID}/games/?tab=all&xml=1`,
-  `https://steamcommunity.com/profiles/${PROFILE_ID}/games?tab=all&xml=1`,
 ]
-
-function decodeXml(value) {
-  return value
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .trim()
-}
-
-function readTag(source, tag) {
-  const match = source.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'i'))
-  return match ? decodeXml(match[1]) : ''
-}
 
 function toDateTime(timestamp) {
   if (!timestamp) return '从未'
@@ -30,17 +14,93 @@ function toDateTime(timestamp) {
   return Number.isNaN(date.getTime()) ? '从未' : date.toLocaleDateString('zh-CN')
 }
 
+function normalizeGames(source) {
+  const list = Array.isArray(source) ? source : Object.values(source ?? {})
+  return list
+    .map(game => {
+      const appid = Number(game?.appid ?? game?.appID)
+      const name = String(game?.name ?? '').trim()
+      if (!appid || !name) return null
+
+      const minutes = Number(game?.playtime_forever ?? 0)
+      const hours = game?.playtime_forever !== undefined
+        ? minutes / 60
+        : Number(game?.hours ?? game?.hours_forever ?? game?.hoursOnRecord ?? 0)
+      const lastPlayed = Number(game?.rtime_last_played ?? game?.last_played ?? game?.lastPlayed ?? 0)
+
+      return {
+        appid,
+        name,
+        hours: Math.round(hours * 10) / 10,
+        lastPlayed: toDateTime(lastPlayed),
+        image: `https://cdn.akamai.steamstatic.com/steam/apps/${appid}/header.jpg`,
+        storeUrl: `https://store.steampowered.com/app/${appid}/`,
+      }
+    })
+    .filter(Boolean)
+}
+
+function extractJsonVariable(html, variableName) {
+  const marker = `${variableName} =`
+  const markerIndex = html.indexOf(marker)
+  if (markerIndex < 0) return null
+
+  const start = html.indexOf('[', markerIndex + marker.length)
+  if (start < 0) return null
+
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let i = start; i < html.length; i += 1) {
+    const char = html[i]
+
+    if (inString) {
+      if (escaped) escaped = false
+      else if (char === '\\') escaped = true
+      else if (char === '"') inString = false
+      continue
+    }
+
+    if (char === '"') inString = true
+    else if (char === '[') depth += 1
+    else if (char === ']') {
+      depth -= 1
+      if (depth === 0) return JSON.parse(html.slice(start, i + 1))
+    }
+  }
+
+  return null
+}
+
+function parseSteamPage(html) {
+  for (const variableName of ['g_rgGameData', 'rgGames']) {
+    try {
+      const games = normalizeGames(extractJsonVariable(html, variableName))
+      if (games.length) return games
+    } catch {
+      // 尝试下一个 Steam 页面数据格式
+    }
+  }
+  return []
+}
+
 function parseGamesXml(xml) {
   const games = []
   const matches = xml.match(/<game>[\s\S]*?<\/game>/gi) ?? []
 
   for (const game of matches) {
-    const appid = Number(readTag(game, 'appID'))
-    const name = readTag(game, 'name')
+    const readTag = tag => {
+      const match = game.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'i'))
+      return match ? match[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').trim() : ''
+    }
+
+    const appid = Number(readTag('appID'))
+    const name = readTag('name')
     if (!appid || !name) continue
 
-    const hours = Number(readTag(game, 'hoursOnRecord')) || 0
-    const lastPlayed = Number(readTag(game, 'lastPlayed')) || 0
+    const hours = Number(readTag('hoursOnRecord')) || 0
+    const lastPlayed = Number(readTag('lastPlayed')) || 0
 
     games.push({
       appid,
@@ -55,28 +115,28 @@ function parseGamesXml(xml) {
   return games
 }
 
+async function fetchSteam(url) {
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+      'X-ValveUserAgent': 'panorama',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    },
+    signal: AbortSignal.timeout(30000),
+  })
+
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.text()
+}
+
 let lastError
 
 for (const url of urls) {
   try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'game-library-steam-sync/1.0',
-        Accept: 'application/xml,text/xml;q=0.9,*/*;q=0.8',
-      },
-      signal: AbortSignal.timeout(30000),
-    })
+    const body = await fetchSteam(url)
+    const games = url.includes('xml=1') ? parseGamesXml(body) : parseSteamPage(body)
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
-    }
-
-    const xml = await response.text()
-    const games = parseGamesXml(xml)
-
-    if (!games.length) {
-      throw new Error('Steam XML 中没有解析到游戏')
-    }
+    if (!games.length) throw new Error('Steam 返回内容中没有解析到公开游戏')
 
     await mkdir(new URL('../public/', import.meta.url), { recursive: true })
     await writeFile(OUTPUT, `${JSON.stringify(games, null, 2)}\n`, 'utf8')
