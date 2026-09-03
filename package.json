@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/fetch-steam-games.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },
@@ -12,7 +13,8 @@
     "@vitejs/plugin-vue": "latest",
     "vite": "latest",
     "vue": "latest",
-    "typescript": "latest"
+    "typescript": "latest",
+    "vue": "latest"
   },
   "devDependencies": {}
 }
