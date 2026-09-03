@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises'
 const PROFILE_ID = '76561198842164016'
 const OUTPUT = new URL('../public/steam-games.json', import.meta.url)
 const STEAM_URL = `https://steamcommunity.com/profiles/${PROFILE_ID}/games/?tab=all&l=english`
+const STEAM_XML_URL = `https://steamcommunity.com/profiles/${PROFILE_ID}/games/?tab=all&xml=1&l=english`
 
 function toDateTime(timestamp) {
   if (!timestamp) return '从未'
@@ -109,6 +110,52 @@ function parseSteamPage(text) {
   return parseGameRows(text)
 }
 
+function parseSteamXml(text) {
+  const games = []
+  const seen = new Set()
+  const gameRegex = /<game>([\s\S]*?)<\/game>/gi
+
+  for (const blockMatch of text.matchAll(gameRegex)) {
+    const block = blockMatch[1]
+    const get = tag => {
+      const match = block.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i'))
+      return match?.[1]?.trim() ?? ''
+    }
+
+    const appid = Number(get('appID'))
+    const name = get('name')
+    if (!appid || !name || seen.has(appid)) continue
+
+    const minutes = Number(get('hoursOnRecord') || 0)
+    const lastPlayed = Number(get('lastPlayed') || 0)
+    seen.add(appid)
+    games.push(makeGame(appid, name, minutes, lastPlayed))
+  }
+
+  return games
+}
+
+async function fetchSteamXml() {
+  const response = await fetch(STEAM_XML_URL, {
+    headers: {
+      accept: 'application/xml,text/xml,text/plain,*/*',
+      'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36',
+    },
+    redirect: 'follow',
+  })
+
+  const text = await response.text()
+  console.log(`Steam XML HTTP 状态：${response.status}`)
+  console.log(`Steam XML 最终地址：${response.url}`)
+  console.log(`Steam XML 页面长度：${text.length}`)
+
+  const games = parseSteamXml(text)
+  console.log(`Steam XML 解析到游戏数量：${games.length}`)
+  if (games.length) return games
+
+  return null
+}
+
 async function fetchWithBrowser() {
   const { chromium } = await import('playwright')
   const browser = await chromium.launch({ headless: true })
@@ -126,7 +173,6 @@ async function fetchWithBrowser() {
     console.log(`Steam 页面标题：${await page.title()}`)
     console.log(`Steam 页面地址：${page.url()}`)
     console.log(`Steam 页面长度：${body.length}`)
-    console.log(`Steam 页面预览：${body.slice(0, 1200).replace(/\s+/g, ' ')}`)
 
     const games = parseSteamPage(body)
     console.log(`浏览器解析到游戏数量：${games.length}`)
@@ -147,11 +193,12 @@ async function readExistingGames() {
 }
 
 try {
-  const games = await fetchWithBrowser()
+  const games = await fetchSteamXml() ?? await fetchWithBrowser()
   await mkdir(new URL('../public/', import.meta.url), { recursive: true })
   await writeFile(OUTPUT, `${JSON.stringify(games, null, 2)}\n`, 'utf8')
   console.log(`Steam 游戏库更新成功：${games.length} 个游戏`)
 } catch (error) {
   const existingGames = await readExistingGames()
   console.warn(`Steam 游戏库本次未能获取，保留现有数据：${existingGames.length} 个游戏。最后错误：${error?.message ?? '未知错误'}`)
+  process.exitCode = 1
 }
