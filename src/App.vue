@@ -1,39 +1,88 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { fetchSteamGames, type SteamGame } from './services/steam'
 
 type GameStatus = '未开始' | '正在玩' | '已通关' | '已弃坑'
 
-type Game = {
+type Game = SteamGame & {
   id: number
-  appid: number
-  name: string
-  hours: number
   status: GameStatus
   genre: string
-  image: string
-  lastPlayed: string
   favorite: boolean
   rating: number
   note: string
   tags: string[]
 }
 
-const games = ref<Game[]>([
-  { id: 1, appid: 1245620, name: 'Elden Ring', hours: 126, status: '正在玩', genre: 'RPG', image: 'https://cdn.akamai.steamstatic.com/steam/apps/1245620/header.jpg', lastPlayed: '今天', favorite: true, rating: 5, note: '继续探索地下世界。', tags: ['魂类', '开放世界'] },
-  { id: 2, appid: 1086940, name: 'Baldur’s Gate 3', hours: 72, status: '正在玩', genre: 'RPG', image: 'https://cdn.akamai.steamstatic.com/steam/apps/1086940/header.jpg', lastPlayed: '昨天', favorite: true, rating: 5, note: '准备推进第二章。', tags: ['CRPG', '剧情'] },
-  { id: 3, appid: 1091500, name: 'Cyberpunk 2077', hours: 31, status: '已通关', genre: 'RPG', image: 'https://cdn.akamai.steamstatic.com/steam/apps/1091500/header.jpg', lastPlayed: '8月28日', favorite: false, rating: 4, note: '', tags: ['开放世界', '科幻'] },
-  { id: 4, appid: 1145360, name: 'Hades', hours: 18, status: '正在玩', genre: '动作', image: 'https://cdn.akamai.steamstatic.com/steam/apps/1145360/header.jpg', lastPlayed: '8月26日', favorite: false, rating: 4, note: '', tags: ['Roguelike'] },
-  { id: 5, appid: 292030, name: 'The Witcher 3', hours: 0, status: '未开始', genre: 'RPG', image: 'https://cdn.akamai.steamstatic.com/steam/apps/292030/header.jpg', lastPlayed: '从未', favorite: false, rating: 0, note: '', tags: ['开放世界'] },
-  { id: 6, appid: 1174180, name: 'Red Dead Redemption 2', hours: 0, status: '未开始', genre: '开放世界', image: 'https://cdn.akamai.steamstatic.com/steam/apps/1174180/header.jpg', lastPlayed: '从未', favorite: false, rating: 0, note: '', tags: ['剧情', '开放世界'] },
-])
+type LocalGameState = Pick<Game, 'status' | 'favorite' | 'rating' | 'note'>
 
+const STORAGE_KEY = 'game-library:games'
+const games = ref<Game[]>([])
 const search = ref('')
 const activeFilter = ref<'全部' | GameStatus | '收藏'>('全部')
 const selectedGame = ref<Game | null>(null)
 const syncing = ref(false)
+const loading = ref(true)
+const error = ref('')
+
+function loadLocalState(): Record<string, LocalGameState> {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
+  } catch {
+    return {}
+  }
+}
+
+function saveLocalState() {
+  const state: Record<string, LocalGameState> = {}
+  games.value.forEach(game => {
+    state[String(game.appid)] = {
+      status: game.status,
+      favorite: game.favorite,
+      rating: game.rating,
+      note: game.note,
+    }
+  })
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+}
+
+function convertGames(source: SteamGame[]): Game[] {
+  const localState = loadLocalState()
+  return source.map((game, index) => {
+    const saved = localState[String(game.appid)]
+    return {
+      ...game,
+      id: index + 1,
+      status: saved?.status || (game.hours > 0 ? '正在玩' : '未开始'),
+      genre: 'Steam 游戏',
+      favorite: saved?.favorite ?? false,
+      rating: saved?.rating ?? 0,
+      note: saved?.note ?? '',
+      tags: [],
+      image: `https://cdn.akamai.steamstatic.com/steam/apps/${game.appid}/header.jpg`,
+    }
+  })
+}
+
+async function syncSteam() {
+  syncing.value = true
+  error.value = ''
+  try {
+    games.value = convertGames(await fetchSteamGames())
+    saveLocalState()
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'Steam 游戏库同步失败'
+  } finally {
+    loading.value = false
+    syncing.value = false
+  }
+}
+
+onMounted(syncSteam)
 
 const filteredGames = computed(() => games.value.filter(game => {
-  const matchesSearch = game.name.toLowerCase().includes(search.value.toLowerCase())
+  const keyword = search.value.trim().toLowerCase()
+  const matchesSearch = !keyword || game.name.toLowerCase().includes(keyword)
   const matchesFilter = activeFilter.value === '全部'
     || (activeFilter.value === '收藏' ? game.favorite : game.status === activeFilter.value)
   return matchesSearch && matchesFilter
@@ -46,6 +95,7 @@ const favoriteCount = computed(() => games.value.filter(game => game.favorite).l
 
 function toggleFavorite(game: Game) {
   game.favorite = !game.favorite
+  saveLocalState()
 }
 
 function openGame(game: Game) {
@@ -53,16 +103,15 @@ function openGame(game: Game) {
 }
 
 function closeGame() {
+  saveLocalState()
   selectedGame.value = null
 }
 
 function setStatus(status: GameStatus) {
-  if (selectedGame.value) selectedGame.value.status = status
-}
-
-function syncSteam() {
-  syncing.value = true
-  window.setTimeout(() => { syncing.value = false }, 1200)
+  if (selectedGame.value) {
+    selectedGame.value.status = status
+    saveLocalState()
+  }
 }
 </script>
 
@@ -78,7 +127,7 @@ function syncSteam() {
         <button :class="{ active: activeFilter === '收藏' }" @click="activeFilter = '收藏'">⭐ <span>收藏</span><b>{{ favoriteCount }}</b></button>
       </nav>
       <div class="sidebar-bottom">
-        <div class="sync-status"><span></span> 本地数据模式</div>
+        <div class="sync-status"><span></span> Steam 公开数据</div>
         <button class="settings">⚙️ <span>设置</span></button>
       </div>
     </aside>
@@ -86,7 +135,7 @@ function syncSteam() {
     <main class="main">
       <header class="topbar">
         <div>
-          <p class="eyebrow">MY COLLECTION</p>
+          <p class="eyebrow">STEAM LIBRARY</p>
           <h1>我的游戏库</h1>
         </div>
         <div class="top-actions">
@@ -95,20 +144,26 @@ function syncSteam() {
         </div>
       </header>
 
+      <div v-if="error" class="error-banner">
+        <span>Steam 数据加载失败：{{ error }}</span>
+        <button @click="syncSteam">重试</button>
+      </div>
+
       <section class="stats">
         <article><span>游戏总数</span><strong>{{ games.length }}</strong><small>收藏 {{ favoriteCount }}</small></article>
-        <article><span>游玩时间</span><strong>{{ totalHours }}<i>h</i></strong><small>累计游玩</small></article>
-        <article><span>已游玩</span><strong>{{ playedCount }}</strong><small>占游戏库 {{ Math.round(playedCount / games.length * 100) }}%</small></article>
+        <article><span>游玩时间</span><strong>{{ Math.round(totalHours * 10) / 10 }}<i>h</i></strong><small>累计游玩</small></article>
+        <article><span>已游玩</span><strong>{{ playedCount }}</strong><small>占游戏库 {{ games.length ? Math.round(playedCount / games.length * 100) : 0 }}%</small></article>
         <article><span>已通关</span><strong>{{ completedCount }}</strong><small>继续保持 🎯</small></article>
       </section>
 
       <section class="section-head">
-        <div><h2>{{ activeFilter === '全部' ? '最近游戏' : activeFilter }}</h2><p>管理你的游戏收藏与游玩状态</p></div>
+        <div><h2>{{ activeFilter === '全部' ? '我的游戏' : activeFilter }}</h2><p>Steam 游戏库 · 数据来自公开资料</p></div>
         <button class="view-btn">▦ 卡片视图</button>
       </section>
 
-      <section class="game-grid">
-        <article v-for="game in filteredGames" :key="game.id" class="game-card" @click="openGame(game)">
+      <section v-if="loading" class="loading">正在读取 Steam 游戏库...</section>
+      <section v-else class="game-grid">
+        <article v-for="game in filteredGames" :key="game.appid" class="game-card" @click="openGame(game)">
           <div class="cover-wrap">
             <img :src="game.image" :alt="game.name" loading="lazy" />
             <button class="favorite" :class="{ on: game.favorite }" @click.stop="toggleFavorite(game)">{{ game.favorite ? '★' : '☆' }}</button>
@@ -130,11 +185,10 @@ function syncSteam() {
         <div class="detail-content">
           <p class="eyebrow">STEAM APP {{ selectedGame.appid }}</p>
           <h2>{{ selectedGame.name }}</h2>
-          <div class="detail-tags"><span v-for="tag in selectedGame.tags" :key="tag">{{ tag }}</span></div>
           <div class="detail-stats"><div><small>游玩时间</small><strong>{{ selectedGame.hours }}h</strong></div><div><small>最近游玩</small><strong>{{ selectedGame.lastPlayed }}</strong></div><div><small>评分</small><strong>{{ selectedGame.rating ? '★'.repeat(selectedGame.rating) : '—' }}</strong></div></div>
           <label class="field"><span>游戏状态</span><select :value="selectedGame.status" @change="setStatus(($event.target as HTMLSelectElement).value as GameStatus)"><option>未开始</option><option>正在玩</option><option>已通关</option><option>已弃坑</option></select></label>
           <label class="field"><span>个人备注</span><textarea v-model="selectedGame.note" placeholder="记录这款游戏的想法、进度或计划..." /></label>
-          <div class="detail-actions"><button class="primary" @click="closeGame">保存</button><button @click="toggleFavorite(selectedGame)">{{ selectedGame.favorite ? '★ 已收藏' : '☆ 收藏' }}</button></div>
+          <div class="detail-actions"><button class="primary" @click="closeGame">保存</button><button @click="toggleFavorite(selectedGame)">{{ selectedGame.favorite ? '★ 已收藏' : '☆ 收藏' }}</button><a :href="selectedGame.storeUrl" target="_blank" rel="noreferrer">打开 Steam</a></div>
         </div>
       </section>
     </div>
