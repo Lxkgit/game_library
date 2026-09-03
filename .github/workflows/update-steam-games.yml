@@ -26,6 +26,12 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
       - name: Update Steam data
         run: node scripts/update-steam-games.mjs
 
