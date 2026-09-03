@@ -18,51 +18,94 @@ function toDateTime(value: string) {
   return date.toLocaleDateString('zh-CN')
 }
 
+function decodeXml(value: string) {
+  return value
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim()
+}
+
+function readTag(source: string, tag: string) {
+  const match = source.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'i'))
+  return match ? decodeXml(match[1]) : ''
+}
+
+function parseGamesXml(xml: string): SteamGame[] {
+  const games: SteamGame[] = []
+  const matches = xml.match(/<game>[\s\S]*?<\/game>/gi) ?? []
+
+  for (const game of matches) {
+    const appid = Number(readTag(game, 'appID'))
+    const name = readTag(game, 'name')
+    if (!appid || !name) continue
+
+    const hours = Number(readTag(game, 'hoursOnRecord')) || 0
+    const lastPlayed = Number(readTag(game, 'lastPlayed')) || 0
+
+    games.push({
+      appid,
+      name,
+      hours: Math.round(hours * 10) / 10,
+      lastPlayed: lastPlayed ? toDateTime(new Date(lastPlayed * 1000).toISOString()) : '从未',
+      image: `https://cdn.akamai.steamstatic.com/steam/apps/${appid}/header.jpg`,
+      storeUrl: `https://store.steampowered.com/app/${appid}/`,
+    })
+  }
+
+  return games
+}
+
+async function fetchText(url: string) {
+  const response = await fetch(url, {
+    cache: 'no-store',
+    headers: {
+      Accept: 'application/xml,text/xml;q=0.9,*/*;q=0.8',
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`)
+  }
+
+  return response.text()
+}
+
 /**
- * 读取构建阶段从 Steam 公开游戏库生成的静态 JSON。
+ * 浏览器运行时读取 Steam 公开游戏库。
  *
- * 这样浏览器只访问当前站点的静态资源，不需要 Steam API Key、后端服务、
- * CORS 代理，也不需要修改基础 nginx 配置。
+ * 不在构建阶段请求 Steam，因此 npm run build 完全独立于 Steam 网络。
+ * 生产环境优先直连 Steam；如果浏览器因跨域策略无法读取，则使用公开
+ * CORS 转发服务读取同一个 Steam XML 页面。
  */
 export async function fetchSteamGames(): Promise<SteamGame[]> {
-  const base = import.meta.env.BASE_URL.endsWith('/')
-    ? import.meta.env.BASE_URL
-    : `${import.meta.env.BASE_URL}/`
-  const url = `${base}steam-games.json`
+  const steamUrl = `https://steamcommunity.com/profiles/${STEAM_CONFIG.profileId}/games/?tab=all&xml=1`
+  const urls = [
+    steamUrl,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(steamUrl)}`,
+  ]
 
-  try {
-    const response = await fetch(url, {
-      cache: 'no-store',
-      headers: {
-        Accept: 'application/json',
-      },
-    })
+  let lastError: unknown = null
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
+  for (const url of urls) {
+    try {
+      const xml = await fetchText(url)
+      const games = parseGamesXml(xml)
+
+      if (!games.length) {
+        throw new Error('Steam 返回的游戏库为空或格式已变化')
+      }
+
+      return games
+    } catch (error) {
+      lastError = error
     }
-
-    const games = await response.json()
-    if (!Array.isArray(games)) {
-      throw new Error('Steam 游戏数据格式错误')
-    }
-
-    return games
-      .filter((game) => Number(game?.appid) && typeof game?.name === 'string')
-      .map((game) => {
-        const appid = Number(game.appid)
-        return {
-          appid,
-          name: game.name,
-          hours: Number(game.hours) || 0,
-          lastPlayed: toDateTime(String(game.lastPlayed ?? '')),
-          image: game.image || `https://cdn.akamai.steamstatic.com/steam/apps/${appid}/header.jpg`,
-          storeUrl: game.storeUrl || `https://store.steampowered.com/app/${appid}/`,
-        }
-      })
-  } catch (error) {
-    throw new Error(`Steam 数据加载失败：${error instanceof Error ? error.message : '请求失败'}`)
   }
+
+  throw new Error(`Steam 数据加载失败：${lastError instanceof Error ? lastError.message : '请求失败'}`)
 }
 
 export { STEAM_CONFIG }
