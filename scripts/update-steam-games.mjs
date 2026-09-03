@@ -4,6 +4,7 @@ const PROFILE_ID = '76561198842164016'
 const OUTPUT = new URL('../public/steam-games.json', import.meta.url)
 const STEAM_URL = `https://steamcommunity.com/profiles/${PROFILE_ID}/games/?tab=all&l=english`
 const STEAM_XML_URL = `https://steamcommunity.com/profiles/${PROFILE_ID}/games/?tab=all&xml=1&l=english`
+const STEAM_XML_PROXY_URL = `https://api.allorigins.win/raw?url=${encodeURIComponent(STEAM_XML_URL)}`
 
 function toDateTime(timestamp) {
   if (!timestamp) return '从未'
@@ -135,6 +136,25 @@ function parseSteamXml(text) {
   return games
 }
 
+async function fetchSteamXmlViaProxy() {
+  const response = await fetch(STEAM_XML_PROXY_URL, {
+    headers: {
+      accept: 'application/xml,text/xml,text/plain,*/*',
+      'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36',
+    },
+  })
+
+  const text = await response.text()
+  console.log(`AllOrigins HTTP 状态：${response.status}`)
+  console.log(`AllOrigins 响应长度：${text.length}`)
+
+  const games = parseSteamXml(text)
+  console.log(`AllOrigins 解析到游戏数量：${games.length}`)
+  if (games.length) return games
+
+  return null
+}
+
 async function fetchSteamXml() {
   const response = await fetch(STEAM_XML_URL, {
     headers: {
@@ -193,7 +213,7 @@ async function readExistingGames() {
 }
 
 try {
-  const games = await fetchSteamXml() ?? await fetchWithBrowser()
+  const games = await fetchSteamXmlViaProxy() ?? await fetchSteamXml() ?? await fetchWithBrowser()
   await mkdir(new URL('../public/', import.meta.url), { recursive: true })
   await writeFile(OUTPUT, `${JSON.stringify(games, null, 2)}\n`, 'utf8')
   console.log(`Steam 游戏库更新成功：${games.length} 个游戏`)
