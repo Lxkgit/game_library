@@ -22,13 +22,14 @@ function toDateTime(value: string) {
 
 /**
  * 读取 Steam 公开游戏库 XML。
- *
- * Steam 官方已经将 Community XML 标记为 deprecated，但它目前仍是
- * 无 API Key 获取公开游戏库的直接方式。浏览器生产环境需要通过同源
- * reverse proxy 转发到 steamcommunity.com，避免 CORS。
+ * Steam 官方已将 Community XML 标记为 deprecated，但当前版本用它实现
+ * “公开游戏库 + 纯前端 + 不使用 API Key”的 MVP。
  */
 export async function fetchSteamGames(): Promise<SteamGame[]> {
-  const url = `/steam-community/profiles/${STEAM_CONFIG.profileId}/games/?tab=all&xml=1`
+  const base = import.meta.env.BASE_URL.endsWith('/')
+    ? import.meta.env.BASE_URL
+    : `${import.meta.env.BASE_URL}/`
+  const url = `${base}steam-community/profiles/${STEAM_CONFIG.profileId}/games/?tab=all&xml=1`
   const response = await fetch(url, { headers: { Accept: 'application/xml,text/xml' } })
 
   if (!response.ok) {
@@ -42,26 +43,20 @@ export async function fetchSteamGames(): Promise<SteamGame[]> {
     throw new Error('Steam 游戏数据解析失败')
   }
 
-  const games = Array.from(document.querySelectorAll('game'))
+  return Array.from(document.querySelectorAll('game'))
     .map((game): SteamGame | null => {
       const appid = Number(text(game, 'appID'))
       const name = text(game, 'name')
       if (!appid || !name) return null
 
-      const logo = text(game, 'logo')
-      const hours = Number(text(game, 'hoursOnRecord')) || 0
-      const lastPlayed = toDateTime(text(game, 'lastPlayed'))
-
       return {
         appid,
         name,
-        hours: Math.round(hours * 10) / 10,
-        lastPlayed: lastPlayed || '从未',
-        image: logo || `https://cdn.akamai.steamstatic.com/steam/apps/${appid}/header.jpg`,
+        hours: Math.round((Number(text(game, 'hoursOnRecord')) || 0) * 10) / 10,
+        lastPlayed: toDateTime(text(game, 'lastPlayed')) || '从未',
+        image: `https://cdn.akamai.steamstatic.com/steam/apps/${appid}/header.jpg`,
         storeUrl: `https://store.steampowered.com/app/${appid}/`,
       }
     })
     .filter((game): game is SteamGame => game !== null)
-
-  return games
 }
