@@ -1,4 +1,4 @@
-import { writeFile, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, mkdir } from 'node:fs/promises'
 
 const PROFILE_ID = '76561198842164016'
 const OUTPUT = new URL('../public/steam-games.json', import.meta.url)
@@ -17,18 +17,19 @@ function toDateTime(timestamp) {
 
 function normalizeGames(source) {
   const list = Array.isArray(source) ? source : Object.values(source ?? {})
-
   return list
     .map(game => {
-      const appid = Number(game?.appid ?? game?.appID ?? game?.appid64)
+      const appid = Number(game?.appid ?? game?.appID ?? game?.appId)
       const name = String(game?.name ?? '').trim()
       if (!appid || !name) return null
 
-      const minutes = Number(game?.playtime_forever ?? 0)
-      const hours = game?.playtime_forever !== undefined
+      const minutes = Number(game?.playtime_forever ?? game?.playtimeForever ?? 0)
+      const hours = game?.playtime_forever !== undefined || game?.playtimeForever !== undefined
         ? minutes / 60
         : Number(game?.hours ?? game?.hours_forever ?? game?.hoursOnRecord ?? 0)
-      const lastPlayed = Number(game?.rtime_last_played ?? game?.last_played ?? game?.lastPlayed ?? 0)
+      const lastPlayed = Number(
+        game?.rtime_last_played ?? game?.last_played ?? game?.lastPlayed ?? 0,
+      )
 
       return {
         appid,
@@ -47,26 +48,19 @@ function extractJsonVariable(html, variableName) {
   const markerIndex = html.indexOf(marker)
   if (markerIndex < 0) return null
 
-  const searchStart = markerIndex + marker.length
-  let start = -1
-  for (let i = searchStart; i < html.length; i += 1) {
-    if (html[i] === '[' || html[i] === '{') {
-      start = i
-      break
-    }
-    if (!/\s/.test(html[i])) return null
-  }
+  const remainder = html.slice(markerIndex + marker.length)
+  const starts = [remainder.indexOf('['), remainder.indexOf('{')].filter(index => index >= 0)
+  const start = Math.min(...starts)
+  if (!Number.isFinite(start)) return null
 
-  if (start < 0) return null
-
-  const opening = html[start]
-  const closing = opening === '[' ? ']' : '}'
+  const firstChar = remainder[start]
+  const closingChar = firstChar === '[' ? ']' : '}'
   let depth = 0
   let inString = false
   let escaped = false
 
-  for (let i = start; i < html.length; i += 1) {
-    const char = html[i]
+  for (let i = start; i < remainder.length; i += 1) {
+    const char = remainder[i]
 
     if (inString) {
       if (escaped) escaped = false
@@ -75,15 +69,11 @@ function extractJsonVariable(html, variableName) {
       continue
     }
 
-    if (char === '"') {
-      inString = true
-    } else if (char === opening) {
-      depth += 1
-    } else if (char === closing) {
+    if (char === '"') inString = true
+    else if (char === firstChar) depth += 1
+    else if (char === closingChar) {
       depth -= 1
-      if (depth === 0) {
-        return JSON.parse(html.slice(start, i + 1))
-      }
+      if (depth === 0) return JSON.parse(remainder.slice(start, i + 1))
     }
   }
 
@@ -91,30 +81,15 @@ function extractJsonVariable(html, variableName) {
 }
 
 function parseSteamPage(html) {
-  const variables = ['g_rgGameData', 'rgGames', 'g_rgOwnedGames']
-
-  for (const variableName of variables) {
+  for (const variableName of ['g_rgGameData', 'rgGames', 'g_rgOwnedGames']) {
     try {
-      const source = extractJsonVariable(html, variableName)
-      const games = normalizeGames(source)
-      if (games.length) {
-        console.log(`Steam 页面变量 ${variableName} 解析成功：${games.length} 个游戏`)
-        return games
-      }
-    } catch (error) {
-      console.warn(`解析 Steam 页面变量 ${variableName} 失败：${error.message}`)
+      const games = normalizeGames(extractJsonVariable(html, variableName))
+      if (games.length) return games
+    } catch {
+      // 尝试下一个 Steam 页面数据格式
     }
   }
 
-  const markers = {
-    private: /(?:game details|games list|profile).*?(?:private|隐私)/i.test(html),
-    login: /(?:Sign In|登录 Steam|Join Steam)/i.test(html),
-    gameData: html.includes('g_rgGameData'),
-    rgGames: html.includes('rgGames'),
-    ownedGames: html.includes('g_rgOwnedGames'),
-  }
-
-  console.warn(`Steam 页面诊断：长度=${html.length}, ${JSON.stringify(markers)}`)
   return []
 }
 
@@ -148,6 +123,17 @@ function parseGamesXml(xml) {
   return games
 }
 
+function diagnoseSteamPage(html) {
+  const lower = html.toLowerCase()
+  return {
+    length: html.length,
+    private: lower.includes('private') || lower.includes('privatestate'),
+    gameData: lower.includes('g_rggamedata'),
+    rgGames: lower.includes('rggames'),
+    ownedGames: lower.includes('ownedgames'),
+  }
+}
+
 async function fetchSteam(url) {
   const response = await fetch(url, {
     headers: {
@@ -162,14 +148,28 @@ async function fetchSteam(url) {
   return response.text()
 }
 
+async function readExistingGames() {
+  try {
+    const content = await readFile(OUTPUT, 'utf8')
+    const games = JSON.parse(content)
+    return Array.isArray(games) ? games : []
+  } catch {
+    return []
+  }
+}
+
 let lastError
 
 for (const url of urls) {
   try {
     const body = await fetchSteam(url)
+    console.log(`Steam 页面诊断：${JSON.stringify(diagnoseSteamPage(body))}`)
+
     const games = url.includes('xml=1') ? parseGamesXml(body) : parseSteamPage(body)
 
-    if (!games.length) throw new Error('Steam 返回内容中没有解析到公开游戏')
+    if (!games.length) {
+      throw new Error('Steam 返回内容中没有解析到公开游戏')
+    }
 
     await mkdir(new URL('../public/', import.meta.url), { recursive: true })
     await writeFile(OUTPUT, `${JSON.stringify(games, null, 2)}\n`, 'utf8')
@@ -181,4 +181,13 @@ for (const url of urls) {
   }
 }
 
-throw new Error(`Steam 游戏库更新失败：${lastError?.message ?? '未知错误'}`)
+const existingGames = await readExistingGames()
+
+console.warn(
+  `Steam 游戏库本次未能获取，保留现有数据：${existingGames.length} 个游戏。` +
+  ` 最后错误：${lastError?.message ?? '未知错误'}`,
+)
+
+// Steam 当前公开页面没有提供可稳定解析的游戏列表时，不能因为数据源异常让整个 CI 失败。
+// 前端继续使用仓库中上一次成功同步的数据；后续定时任务会再次尝试更新。
+process.exit(0)
