@@ -14,5 +14,7 @@
     "vue": "latest",
     "typescript": "latest"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "playwright": "latest"
+  }
 }
