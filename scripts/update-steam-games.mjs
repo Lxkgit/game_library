@@ -2,10 +2,6 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises'
 
 const PROFILE_ID = '76561198842164016'
 const OUTPUT = new URL('../public/steam-games.json', import.meta.url)
-
-// 不使用 Steam Web API Key。
-// GitHub Actions 使用 Playwright/Chromium 访问公开 Steam 游戏页，
-// 避免 curl/Jina 被 Steam 当作非浏览器请求。
 const STEAM_URL = `https://steamcommunity.com/profiles/${PROFILE_ID}/games/?tab=all&l=english`
 
 function toDateTime(timestamp) {
@@ -82,21 +78,22 @@ function parseGameRows(text) {
   const seen = new Set()
   const add = (appid, name, hours = 0, lastPlayed = 0) => {
     const id = Number(appid)
-    const cleanName = String(name ?? '').replace(/\\u003c|<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim()
+    const cleanName = String(name ?? '')
+      .replace(/\\u003c|<[^>]*>/g, ' ')
+      .replace(/\\s+/g, ' ')
+      .trim()
     if (!id || !cleanName || seen.has(id)) return
     seen.add(id)
     games.push(makeGame(id, cleanName, hours, lastPlayed))
   }
 
-  // Steam 页面上的 data-ds-appid + 游戏名。
-  const appidRegex = /data-ds-appid=["'](\\d+)["'][^>]*>([\\s\\S]{0,1000}?)<\\/a>/gi
+  const appidRegex = /data-ds-appid=["'](\d+)["'][^>]*>([\s\S]{0,1000}?)<\/a>/gi
   for (const match of text.matchAll(appidRegex)) {
     const name = match[2].replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&')
     add(match[1], name)
   }
 
-  // 常见 store 链接形式。
-  const linkRegex = /(?:https?:\\/\\/store\\.steampowered\\.com)?\\/app\\/(\\d+)[^"'<> ]*["'][^>]*>([\\s\\S]{0,500}?)<\\/a>/gi
+  const linkRegex = /(?:https?:\/\/store\.steampowered\.com)?\/app\/(\d+)[^"'<> ]*["'][^>]*>([\s\S]{0,500}?)<\/a>/gi
   for (const match of text.matchAll(linkRegex)) {
     add(match[1], match[2].replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&'))
   }
@@ -129,7 +126,7 @@ async function fetchWithBrowser() {
     console.log(`Steam 页面标题：${await page.title()}`)
     console.log(`Steam 页面地址：${page.url()}`)
     console.log(`Steam 页面长度：${body.length}`)
-    console.log(`Steam 页面预览：${body.slice(0, 1200).replace(/\\s+/g, ' ')}`)
+    console.log(`Steam 页面预览：${body.slice(0, 1200).replace(/\s+/g, ' ')}`)
 
     const games = parseSteamPage(body)
     console.log(`浏览器解析到游戏数量：${games.length}`)
@@ -157,5 +154,4 @@ try {
 } catch (error) {
   const existingGames = await readExistingGames()
   console.warn(`Steam 游戏库本次未能获取，保留现有数据：${existingGames.length} 个游戏。最后错误：${error?.message ?? '未知错误'}`)
-  // 数据源失败不阻塞 CI；成功时才覆盖静态数据。
 }
