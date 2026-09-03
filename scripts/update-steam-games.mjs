@@ -4,6 +4,7 @@ const PROFILE_ID = '76561198842164016'
 const OUTPUT = new URL('../public/steam-games.json', import.meta.url)
 
 const urls = [
+  `https://steamcommunity.com/profiles/${PROFILE_ID}/games/?tab=all&l=english`,
   `https://steamcommunity.com/profiles/${PROFILE_ID}/games/?tab=all`,
   `https://steamcommunity.com/profiles/${PROFILE_ID}/games/?tab=all&xml=1`,
 ]
@@ -16,9 +17,10 @@ function toDateTime(timestamp) {
 
 function normalizeGames(source) {
   const list = Array.isArray(source) ? source : Object.values(source ?? {})
+
   return list
     .map(game => {
-      const appid = Number(game?.appid ?? game?.appID)
+      const appid = Number(game?.appid ?? game?.appID ?? game?.appid64)
       const name = String(game?.name ?? '').trim()
       if (!appid || !name) return null
 
@@ -45,9 +47,20 @@ function extractJsonVariable(html, variableName) {
   const markerIndex = html.indexOf(marker)
   if (markerIndex < 0) return null
 
-  const start = html.indexOf('[', markerIndex + marker.length)
+  const searchStart = markerIndex + marker.length
+  let start = -1
+  for (let i = searchStart; i < html.length; i += 1) {
+    if (html[i] === '[' || html[i] === '{') {
+      start = i
+      break
+    }
+    if (!/\s/.test(html[i])) return null
+  }
+
   if (start < 0) return null
 
+  const opening = html[start]
+  const closing = opening === '[' ? ']' : '}'
   let depth = 0
   let inString = false
   let escaped = false
@@ -62,11 +75,15 @@ function extractJsonVariable(html, variableName) {
       continue
     }
 
-    if (char === '"') inString = true
-    else if (char === '[') depth += 1
-    else if (char === ']') {
+    if (char === '"') {
+      inString = true
+    } else if (char === opening) {
+      depth += 1
+    } else if (char === closing) {
       depth -= 1
-      if (depth === 0) return JSON.parse(html.slice(start, i + 1))
+      if (depth === 0) {
+        return JSON.parse(html.slice(start, i + 1))
+      }
     }
   }
 
@@ -74,14 +91,30 @@ function extractJsonVariable(html, variableName) {
 }
 
 function parseSteamPage(html) {
-  for (const variableName of ['g_rgGameData', 'rgGames']) {
+  const variables = ['g_rgGameData', 'rgGames', 'g_rgOwnedGames']
+
+  for (const variableName of variables) {
     try {
-      const games = normalizeGames(extractJsonVariable(html, variableName))
-      if (games.length) return games
-    } catch {
-      // 尝试下一个 Steam 页面数据格式
+      const source = extractJsonVariable(html, variableName)
+      const games = normalizeGames(source)
+      if (games.length) {
+        console.log(`Steam 页面变量 ${variableName} 解析成功：${games.length} 个游戏`)
+        return games
+      }
+    } catch (error) {
+      console.warn(`解析 Steam 页面变量 ${variableName} 失败：${error.message}`)
     }
   }
+
+  const markers = {
+    private: /(?:game details|games list|profile).*?(?:private|隐私)/i.test(html),
+    login: /(?:Sign In|登录 Steam|Join Steam)/i.test(html),
+    gameData: html.includes('g_rgGameData'),
+    rgGames: html.includes('rgGames'),
+    ownedGames: html.includes('g_rgOwnedGames'),
+  }
+
+  console.warn(`Steam 页面诊断：长度=${html.length}, ${JSON.stringify(markers)}`)
   return []
 }
 
