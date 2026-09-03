@@ -59,36 +59,45 @@ function parseGamesXml(xml: string): SteamGame[] {
   return games
 }
 
-async function fetchText(url: string) {
-  const response = await fetch(url, {
-    cache: 'no-store',
-    headers: {
-      Accept: 'application/xml,text/xml;q=0.9,*/*;q=0.8',
-    },
-  })
+async function fetchText(url: string, timeout = 12000) {
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), timeout)
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`)
+  try {
+    const response = await fetch(url, {
+      cache: 'no-store',
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/xml,text/xml;q=0.9,*/*;q=0.8',
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`)
+    }
+
+    return response.text()
+  } finally {
+    window.clearTimeout(timer)
   }
-
-  return response.text()
 }
 
 /**
  * 浏览器运行时读取 Steam 公开游戏库。
  *
- * 不在构建阶段请求 Steam，因此 npm run build 完全独立于 Steam 网络。
- * 生产环境优先直连 Steam；如果浏览器因跨域策略无法读取，则使用公开
- * CORS 转发服务读取同一个 Steam XML 页面。
+ * Steam Community 不允许普通网页直接跨域读取 XML，因此这里不再依赖
+ * Vite proxy 或 nginx。浏览器会依次尝试多个公开 CORS 转发服务。
+ * npm run build 完全不会访问 Steam。
  */
 export async function fetchSteamGames(): Promise<SteamGame[]> {
   const steamUrl = `https://steamcommunity.com/profiles/${STEAM_CONFIG.profileId}/games/?tab=all&xml=1`
   const urls = [
     steamUrl,
     `https://api.allorigins.win/raw?url=${encodeURIComponent(steamUrl)}`,
+    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(steamUrl)}`,
   ]
 
-  let lastError: unknown = null
+  const errors: string[] = []
 
   for (const url of urls) {
     try {
@@ -101,11 +110,11 @@ export async function fetchSteamGames(): Promise<SteamGame[]> {
 
       return games
     } catch (error) {
-      lastError = error
+      errors.push(error instanceof Error ? error.message : '请求失败')
     }
   }
 
-  throw new Error(`Steam 数据加载失败：${lastError instanceof Error ? lastError.message : '请求失败'}`)
+  throw new Error(`Steam 数据加载失败：${errors.join(' / ')}`)
 }
 
 export { STEAM_CONFIG }
