@@ -48,37 +48,41 @@ function parseGamesXml(xml: string): SteamGame[] {
 /**
  * 读取 Steam 公开游戏库 XML。
  *
- * Steam 当前公开格式：
- * https://steamcommunity.com/profiles/<SteamID64>/games?tab=all&xml=1
- *
- * 这里不能再使用 /tool/game/steam-community/... 作为生产请求地址：
- * Vite 的 server.proxy 只在开发服务器生效，生产环境下会直接得到 404。
- *
- * 因此生产环境优先直接访问 Steam；如果浏览器因 CORS 拒绝，再通过
- * allorigins 的 raw 代理读取 XML。整个过程仍然是纯前端，不需要 API Key。
+ * Steam 的 Community XML 接口没有提供可依赖的浏览器 CORS 响应，
+ * 因此前端直接 fetch Steam 时可能出现 Failed to fetch。
+ * 当前仍保持纯前端、无需 API Key；先尝试直连，再依次使用公开 CORS 代理。
  */
 export async function fetchSteamGames(): Promise<SteamGame[]> {
   const steamUrl = `https://steamcommunity.com/profiles/${STEAM_CONFIG.profileId}/games?tab=all&xml=1`
 
-  try {
-    const response = await fetch(steamUrl, {
-      headers: { Accept: 'application/xml,text/xml' },
-    })
+  const requests: Array<() => Promise<Response>> = [
+    () => fetch(steamUrl),
+    () => fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(steamUrl)}`),
+    () => fetch(`https://corsproxy.io/?url=${encodeURIComponent(steamUrl)}`),
+    () => fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(steamUrl)}`),
+  ]
 
-    if (!response.ok) {
-      throw new Error(`Steam 返回 HTTP ${response.status}`)
+  const errors: string[] = []
+
+  for (const request of requests) {
+    try {
+      const response = await request()
+      if (!response.ok) {
+        errors.push(`HTTP ${response.status}`)
+        continue
+      }
+
+      const xml = await response.text()
+      if (!xml.trim()) {
+        errors.push('返回内容为空')
+        continue
+      }
+
+      return parseGamesXml(xml)
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : 'Failed to fetch')
     }
-
-    return parseGamesXml(await response.text())
-  } catch (directError) {
-    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(steamUrl)}`
-    const response = await fetch(proxyUrl)
-
-    if (!response.ok) {
-      const directMessage = directError instanceof Error ? directError.message : 'Steam 请求失败'
-      throw new Error(`${directMessage}；CORS 代理返回 HTTP ${response.status}`)
-    }
-
-    return parseGamesXml(await response.text())
   }
+
+  throw new Error(`Steam 数据请求失败：${errors.join('；')}`)
 }
