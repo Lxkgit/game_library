@@ -6,10 +6,10 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     proxy: {
-      '/steam-community': {
+      '/tool/game/steam-community': {
         target: 'https://steamcommunity.com',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/steam-community/, ''),
+        rewrite: (path) => path.replace(/^\/tool\/game\/steam-community/, ''),
       },
     },
   },
