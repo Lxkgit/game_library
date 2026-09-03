@@ -9,60 +9,32 @@ export type SteamGame = {
   storeUrl: string
 }
 
-function text(parent: Element, selector: string) {
-  return parent.querySelector(selector)?.textContent?.trim() ?? ''
-}
-
 function toDateTime(value: string) {
-  if (!value) return ''
-  const timestamp = Number(value)
-  if (!Number.isFinite(timestamp)) return ''
-  return new Date(timestamp * 1000).toLocaleDateString('zh-CN')
-}
+  if (!value) return '从未'
 
-function parseGamesXml(xml: string): SteamGame[] {
-  const document = new DOMParser().parseFromString(xml, 'application/xml')
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '从未'
 
-  if (document.querySelector('parsererror')) {
-    throw new Error('Steam 游戏数据解析失败')
-  }
-
-  return Array.from(document.querySelectorAll('game'))
-    .map((game): SteamGame | null => {
-      const appid = Number(text(game, 'appID'))
-      const name = text(game, 'name')
-      if (!appid || !name) return null
-
-      return {
-        appid,
-        name,
-        hours: Math.round((Number(text(game, 'hoursOnRecord')) || 0) * 10) / 10,
-        lastPlayed: toDateTime(text(game, 'lastPlayed')) || '从未',
-        image: `https://cdn.akamai.steamstatic.com/steam/apps/${appid}/header.jpg`,
-        storeUrl: `https://store.steampowered.com/app/${appid}/`,
-      }
-    })
-    .filter((game): game is SteamGame => game !== null)
+  return date.toLocaleDateString('zh-CN')
 }
 
 /**
- * 读取 Steam 公开游戏库 XML。
+ * 读取构建阶段从 Steam 公开游戏库生成的静态 JSON。
  *
- * 浏览器不直接请求 Steam，而是请求当前站点的反向代理。
- * 生产环境需要 nginx 将 /tool/game/steam-community/ 转发到 Steam。
+ * 这样浏览器只访问当前站点的静态资源，不需要 Steam API Key、后端服务、
+ * CORS 代理，也不需要修改基础 nginx 配置。
  */
 export async function fetchSteamGames(): Promise<SteamGame[]> {
   const base = import.meta.env.BASE_URL.endsWith('/')
     ? import.meta.env.BASE_URL
     : `${import.meta.env.BASE_URL}/`
-
-  // 保留 games/ 尾斜杠，兼容 Steam Community 当前常见的游戏库 XML 地址。
-  const url = `${base}steam-community/profiles/${STEAM_CONFIG.profileId}/games/?tab=all&xml=1`
+  const url = `${base}steam-games.json`
 
   try {
     const response = await fetch(url, {
+      cache: 'no-store',
       headers: {
-        Accept: 'application/xml,text/xml;q=0.9,*/*;q=0.8',
+        Accept: 'application/json',
       },
     })
 
@@ -70,13 +42,27 @@ export async function fetchSteamGames(): Promise<SteamGame[]> {
       throw new Error(`HTTP ${response.status}`)
     }
 
-    const xml = await response.text()
-    if (!xml.trim()) {
-      throw new Error('返回内容为空')
+    const games = await response.json()
+    if (!Array.isArray(games)) {
+      throw new Error('Steam 游戏数据格式错误')
     }
 
-    return parseGamesXml(xml)
+    return games
+      .filter((game) => Number(game?.appid) && typeof game?.name === 'string')
+      .map((game) => {
+        const appid = Number(game.appid)
+        return {
+          appid,
+          name: game.name,
+          hours: Number(game.hours) || 0,
+          lastPlayed: toDateTime(String(game.lastPlayed ?? '')),
+          image: game.image || `https://cdn.akamai.steamstatic.com/steam/apps/${appid}/header.jpg`,
+          storeUrl: game.storeUrl || `https://store.steampowered.com/app/${appid}/`,
+        }
+      })
   } catch (error) {
-    throw new Error(`Steam 数据请求失败：${error instanceof Error ? error.message : '请求失败'}`)
+    throw new Error(`Steam 数据加载失败：${error instanceof Error ? error.message : '请求失败'}`)
   }
 }
+
+export { STEAM_CONFIG }
