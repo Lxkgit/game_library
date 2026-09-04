@@ -16,7 +16,6 @@ type SteamConfig = {
 
 type SteamResponse = {
   response?: {
-    game_count?: number
     games?: Array<{
       appid: number
       name: string
@@ -25,6 +24,12 @@ type SteamResponse = {
     }>
   }
 }
+
+const STEAM_API_URL = 'https://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/'
+const PROXY_URLS = [
+  'https://api.allorigins.win/raw?url=',
+  'https://corsproxy.io/?url=',
+]
 
 async function loadSteamConfig(): Promise<SteamConfig> {
   const response = await fetch(STEAM_CONFIG.configUrl, { cache: 'no-store' })
@@ -40,6 +45,28 @@ async function loadSteamConfig(): Promise<SteamConfig> {
   return config
 }
 
+async function requestSteamApi(url: string): Promise<SteamResponse> {
+  let lastError: unknown
+
+  for (const proxy of PROXY_URLS) {
+    try {
+      const response = await fetch(`${proxy}${encodeURIComponent(url)}`, {
+        cache: 'no-store',
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+
+      return await response.json() as SteamResponse
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  throw new Error(lastError instanceof Error ? `Steam 数据加载失败：${lastError.message}` : 'Steam 数据加载失败')
+}
+
 export async function fetchSteamGames(): Promise<SteamGame[]> {
   const config = await loadSteamConfig()
   const params = new URLSearchParams({
@@ -50,12 +77,7 @@ export async function fetchSteamGames(): Promise<SteamGame[]> {
     include_played_free_games: '1',
   })
 
-  const response = await fetch(`https://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?${params}`)
-  if (!response.ok) {
-    throw new Error(`Steam API 请求失败：HTTP ${response.status}`)
-  }
-
-  const data = await response.json() as SteamResponse
+  const data = await requestSteamApi(`${STEAM_API_URL}?${params}`)
   const games = data.response?.games || []
 
   return games.map(game => {
