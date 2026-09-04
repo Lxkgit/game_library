@@ -1,3 +1,5 @@
+import { STEAM_CONFIG } from '../config/steam'
+
 export type SteamGame = {
   appid: number
   name: string
@@ -92,7 +94,7 @@ export async function fetchSteamGames(): Promise<SteamGame[]> {
     }
 
     timer = window.setTimeout(() => {
-      finish(() => reject(new Error('未检测到 Game Library Steam 扩展，请安装并启用扩展后重试')))
+      finish(() => reject(new Error('未检测到 Steam 扩展，请安装并启用扩展后重试')))
     }, 15000)
 
     window.addEventListener('message', onMessage)
