@@ -13,8 +13,5 @@
     "vite": "latest",
     "vue": "latest",
     "typescript": "latest"
-  },
-  "devDependencies": {
-    "playwright": "latest"
   }
 }
